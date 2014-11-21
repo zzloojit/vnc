@@ -5,5 +5,7 @@ typedef struct {
   char* hostname;
   short port;
 }vncaddr;
-void vnc_dowork(void* arg);
+
+void vnc_start(void* arg);
+void vnc_stop();
 #endif

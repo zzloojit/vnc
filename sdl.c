@@ -1,6 +1,7 @@
 #include <SDL.h>
 #include "vnc.h"
 #include <assert.h>
+
 int main(int argc, char** argv)
 {
   SDL_Init(SDL_INIT_VIDEO);
@@ -12,9 +13,7 @@ int main(int argc, char** argv)
   addr.hostname = "10.3.3.58";
   addr.port = 7013;
   
-  r = uv_thread_create(&tid, vnc_dowork, (void*)&addr);
-  assert(r == 0);
-  
+  vnc_start((void*)&addr);
   int flags = SDL_HWSURFACE | SDL_ASYNCBLIT | SDL_HWACCEL;
   SDL_Surface* screen = SDL_SetVideoMode(1024, 768, 32,
 					 flags);
@@ -32,7 +31,7 @@ int main(int argc, char** argv)
 	  }
       }
   }
-  r = uv_thread_join(&tid);
+  
   SDL_Quit();
   return 0;
 }
