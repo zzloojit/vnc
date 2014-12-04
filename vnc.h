@@ -21,5 +21,8 @@ void push_pointer_event (unsigned char bmask,
 			 unsigned short xpos,
 			 unsigned short ypos);
 
+void push_key_event (unsigned char down_flag,
+		     unsigned int  key);
+
 void vnc_stop();
 #endif

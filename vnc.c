@@ -8,6 +8,7 @@
 #include <string.h>
 #include <SDL.h>
 
+
 typedef struct {
   uv_write_t req;
   uv_buf_t buf;
@@ -84,8 +85,11 @@ static  vnc_context context;
 static  uv_thread_t tid;
 static  uv_loop_t* loop;
 static  except_rd_t stream;
+uv_timer_t update_req;
 
-
+// define in sdl.c
+extern void handle_mousebutton(SDL_Event *ev);
+extern void handle_mousemotion (SDL_Event *ev);
 
 static  void (*handle)(uv_stream_t* tcp, ssize_t nread, uv_buf_t buf);
 static void handle_incoming (uv_stream_t *tcp, ssize_t nread, uv_buf_t buf);
@@ -100,6 +104,7 @@ void push_pointer_event (unsigned char bmask,
 			     unsigned short xpos,
 			     unsigned short ypos)
 {
+
   typedef struct  {
     unsigned char message_type;
     unsigned char button_mask;
@@ -107,8 +112,6 @@ void push_pointer_event (unsigned char bmask,
     unsigned short ypos;
   }*ppointer_event ;
 
-  if (context.init = 0)
-    return;
   int r = 0;
   write_req_t* wr = (write_req_t *)malloc(sizeof(write_req_t));
   ppointer_event  p_event= malloc(sizeof(*p_event));
@@ -117,17 +120,88 @@ void push_pointer_event (unsigned char bmask,
   p_event->xpos = htons(xpos);
   p_event->ypos = htons(ypos);
   wr->buf = uv_buf_init((void*)p_event, sizeof(*p_event));
-  r = uv_write(&wr->req, stream.handle, &wr->buf, 1, write_cb);
 
-  framebuff_updatereq(0, 0, context.width, context.height, 1);
+  r = uv_write(&wr->req, stream.handle, &wr->buf, 1, write_cb);
+}
+
+void push_key_event (unsigned char down_flag,
+		     unsigned int  key)
+{
+  typedef struct {
+    unsigned char message_type;
+    unsigned char down_flag;
+    unsigned short padding;
+    unsigned int   key;
+  }key_event;
+
+  int r = 0;
+  write_req_t* wr = (write_req_t *)malloc(sizeof(write_req_t));
+  key_event*  p_event= malloc(sizeof(key_event));
+  p_event->message_type = 4;
+  p_event->down_flag = down_flag;
+  p_event->padding = 0;
+  p_event->key = htonl(key);
+  wr->buf = uv_buf_init ((void*)p_event, sizeof (*p_event));
+
+  r = uv_write (&wr->req, stream.handle, &wr->buf, 1, write_cb);
+
 }
 
 static void write_cb (uv_write_t* req, int status)
 {
   write_req_t* wr = (write_req_t*)req;
-  Debug("write callback\n");
   free(wr->buf.base);
   free(wr);
+}
+
+static void handle_sdlev (uv_stream_t* pipe, ssize_t nread, uv_buf_t buf)
+{
+  SDL_Event *ev;
+
+  assert (nread = sizeof (ev));
+  ev = *(SDL_Event**)buf.base;
+  switch (ev->type) {
+  case SDL_MOUSEMOTION:
+      handle_mousemotion(ev);
+      break;
+  case SDL_MOUSEBUTTONDOWN:
+  case SDL_MOUSEBUTTONUP:
+    handle_mousebutton(ev);
+    break;
+  case SDL_KEYDOWN:
+    handle_keydown(ev);
+    break;
+  case SDL_KEYUP:
+    handle_keyup(ev);
+    break;
+  default:
+    break;
+  }
+  int r = 0;
+  write (context.pipe, &r, sizeof (r));
+}
+
+static uv_buf_t sdl_alloc(uv_handle_t* handle, size_t suggested_size) 
+{
+  // used size 2 * SDL_Event avoid bug
+  static SDL_Event* ev[2];
+  return uv_buf_init ((char*)&ev, sizeof(ev));
+}
+
+// handle input from mouse and keyboard 
+static void handle_input (void)
+{
+  static uv_tcp_t pipe;
+  int r = 0;
+  int flags = fcntl(context.pipe, F_GETFL, 0);
+  assert(flags >= 0);
+  r = fcntl(context.pipe, F_SETFL, flags | O_NONBLOCK);
+  assert(r >= 0);
+
+  r = uv_tcp_init (loop, &pipe);
+
+  r = uv_tcp_open (&pipe, context.pipe);
+  uv_read_start((uv_stream_t*)&pipe, sdl_alloc, handle_sdlev);
 }
 
 static void framebuff_updatereq(unsigned short x, unsigned short y, 
@@ -152,6 +226,7 @@ static void framebuff_updatereq(unsigned short x, unsigned short y,
   req_buf->width = htons(w);
   req_buf->height = htons(h);
   wr->buf = uv_buf_init((char*)req_buf, sizeof(*req_buf));
+
   r = uv_write(&wr->req, stream.handle, &wr->buf, 1, write_cb);
   
   assert (r == 0);
@@ -198,8 +273,7 @@ static void handle_updaterect()
       SDL_UpdateRect(context.screen, rect.xpos, rect.ypos, rect.width, rect.height);
       update.nrect--;
       int len = sizeof(rect) + rect.width * rect.height * 4;
-      memcpy (update.buff, update.buff + len, update.curr - update.buff - len);
-      dump_bitmap (rect.width, rect.height, 32 ,update.buff + sizeof(rect));
+
       if (rect.encoding_type == RAW) {
 	Debug("update rect format is RAW\n"
 	      "xpos is %d ypos is %d\n"
@@ -208,11 +282,7 @@ static void handle_updaterect()
 	      rect.width, rect.height);
       }
 
-      if (update.nrect == 0) {
 	handle = handle_conn;
-	Debug ("nrect == 0 buffer remainder is %d\n", update.curr - update.buff
-	       - len );
-      }
     }
   }
 }
@@ -270,7 +340,7 @@ static void handle_rect_entry(uv_stream_t *tcp, ssize_t nread, uv_buf_t buf)
   update.width = ntohs(prect->width);
   update.height = ntohs(prect->height);
   update.encoding = ntohl(prect->encoding_type);
-  
+  //Debug ("rect %d %d %d %d\n", update.xpos, update.ypos, update.width, update.height);
   assert (tcp == stream.handle);
   stream.nread = 0;
   stream.nexcept = update.width * update.height * context.pixformat.bpp / 8;
@@ -293,7 +363,7 @@ static void handle_framebuffupdate(uv_stream_t* tcp, ssize_t nread, uv_buf_t buf
   update_head head = (update_head)&buf.base[0];
   
   update.nrect = ntohs(head->nrectangles);
-  Debug ("begin update nrectangles is %d \n", update.nrect);
+  //Debug ("begin update nrectangles is %d \n", update.nrect);
 
   if (update.nrect) {
     handle = handle_rect_entry;
@@ -308,7 +378,7 @@ static void handle_conn(uv_stream_t* tcp, ssize_t nread, uv_buf_t buf)
 {
   assert (nread >= 1);
   unsigned char msgid = (unsigned char )buf.base[0];
-  Debug("%s nread %d msgid is %d\n", __FUNCTION__, nread, msgid);
+  //Debug("%s nread %d msgid is %d\n", __FUNCTION__, nread, msgid);
 
   assert (tcp == stream.handle);
   // framebufferupdate 
@@ -323,7 +393,7 @@ static void handle_conn(uv_stream_t* tcp, ssize_t nread, uv_buf_t buf)
 
 static void handle_read(uv_stream_t* tcp, ssize_t nread, uv_buf_t buf)
 {
-  Debug("handle read %d\n", nread);
+  //  Debug("handle read %d\n", nread);
   assert (tcp == stream.handle);
   assert (nread >= 0);
   stream.nread += nread;
@@ -334,6 +404,12 @@ static void handle_read(uv_stream_t* tcp, ssize_t nread, uv_buf_t buf)
   uv_buf_t buff = uv_buf_init (stream.buff, BUFFSIZE);
   handle(tcp, stream.nread, buff);
   //free (buf.base);
+}
+
+static void update_cb (uv_timer_t* handle, int status)
+{
+
+  framebuff_updatereq (0, 0, context.width , context.height, 1);
 }
 
 static void handle_name(uv_stream_t *tcp, ssize_t nread, uv_buf_t buf)
@@ -361,6 +437,9 @@ static void handle_name(uv_stream_t *tcp, ssize_t nread, uv_buf_t buf)
 
   r = read (context.pipe, &context.screen, sizeof (context.screen));
   assert (r == sizeof (context.screen));
+
+  uv_timer_start (&update_req, update_cb, 0, 30);
+  handle_input();
 }
 
 static void handle_ServerInit(uv_stream_t* tcp, ssize_t nread, uv_buf_t buf)
@@ -495,12 +574,15 @@ static void vnc_dowork(void* arg) {
   int r = 0;
   static uv_connect_t connect_req;
 
+
   struct sockaddr_in saddr = uv_ip4_addr(args->hostname, args->port);
   context.pipe = args->send;
   loop = uv_loop_new();
 
   r = uv_tcp_init(loop, &conn);
   assert (r == 0);
+
+  uv_timer_init (loop, &update_req);
   
   r = uv_tcp_connect(&connect_req, &conn, saddr, connect_cb);
   assert (r == 0);
